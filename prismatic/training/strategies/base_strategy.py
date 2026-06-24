@@ -8,6 +8,7 @@ Training Strategies (DDP, FSDP-Grad, FSDP-Full) tend to have a lot of repeated c
 heavy lifting.
 """
 
+import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable, Optional
@@ -45,6 +46,7 @@ class TrainingStrategy(ABC):
         lr_scheduler_type: str,
         warmup_ratio: float,
         enable_gradient_checkpointing: bool = True,
+        compile_llm: bool = True,
         enable_mixed_precision_training: bool = True,
         reduce_in_full_precision: bool = False,
         mixed_precision_dtype: torch.dtype = torch.bfloat16,
@@ -66,6 +68,7 @@ class TrainingStrategy(ABC):
 
         # Generic Strategy Parameters
         self.enable_gradient_checkpointing = enable_gradient_checkpointing
+        self.compile_llm = compile_llm
         self.enable_mixed_precision_training = enable_mixed_precision_training
         self.reduce_in_full_precision = reduce_in_full_precision
         self.mixed_precision_dtype = mixed_precision_dtype
@@ -141,7 +144,10 @@ class TrainingStrategy(ABC):
             batch_size=self.per_device_batch_size,
             sampler=sampler,
             collate_fn=collator,
-            num_workers=2,
+            num_workers=min(os.cpu_count() or 4, 32),
+            prefetch_factor=4,
+            persistent_workers=True,
+            pin_memory=True,
             worker_init_fn=self.worker_init_fn,
         )
 
@@ -170,9 +176,15 @@ class TrainingStrategy(ABC):
                 # Zero-Gradients (just in case)
                 self.optimizer.zero_grad()
 
+                import time as _time
+                _data_time, _compute_time, _t0 = 0.0, 0.0, _time.monotonic()
+
                 # Note that we'll unpack batch (and let AMP/FSDP do its thing) in the VLM.forward() call
                 #   => Basically, if we're using mixed precision (or not), autocast()/FSDP will move to device!
                 for train_idx, batch in enumerate(dataloader):
+                    _t1 = _time.monotonic()
+                    _data_time += _t1 - _t0
+
                     # [Contract] self.vlm.forward() must automatically compute `loss` and return!
                     with torch.autocast(
                         "cuda",
@@ -206,6 +218,9 @@ class TrainingStrategy(ABC):
                     normalized_loss = loss / self.grad_accumulation_steps
                     normalized_loss.backward()
 
+                    _t0 = _time.monotonic()
+                    _compute_time += _t0 - _t1
+
                     # Step =>> Only if Done w/ Gradient Accumulation
                     if (train_idx + 1) % self.grad_accumulation_steps == 0:
                         metrics.commit(update_step_time=True)
@@ -218,9 +233,19 @@ class TrainingStrategy(ABC):
                         self.lr_scheduler.step()
                         self.optimizer.zero_grad()
 
+                        _t0_opt = _time.monotonic()
+                        _compute_time += _t0_opt - _t0
+                        _t0 = _t0_opt
+
                         # Push Metrics
-                        metrics.commit(global_step=metrics.global_step + 1, lr=self.lr_scheduler.get_last_lr()[0])
+                        metrics.commit(
+                            global_step=metrics.global_step + 1,
+                            lr=self.lr_scheduler.get_last_lr()[0],
+                            data_time=_data_time,
+                            compute_time=_compute_time,
+                        )
                         status = metrics.push()
+                        _data_time, _compute_time = 0.0, 0.0
 
                         # Check for Termination & Save Final Checkpoint (in case `max_steps` is not None)
                         if self.max_steps is not None and metrics.global_step >= self.max_steps:

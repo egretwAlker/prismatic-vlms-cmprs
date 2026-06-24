@@ -35,6 +35,7 @@ dependencies = [
     "einops",
     # "flash_attn>=2.5.5",  # Here for documentation -- install *AFTER* editable install (follow README)
     "huggingface_hub",
+    "pySmartDL",
     "jsonlines",
     "rich",
     "sentencepiece",

@@ -11,13 +11,14 @@ random access image reading is relatively cheap/fast.
 
 import copy
 import json
+import random
 from pathlib import Path
 from typing import Dict, List, Tuple, Type
 
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
-from transformers import CodeGenTokenizerFast, LlamaTokenizerFast, PreTrainedTokenizerBase
+from transformers import CodeGenTokenizerFast, LlamaTokenizerFast, PreTrainedTokenizerBase, T5TokenizerFast
 
 from prismatic.models.backbones.llm.prompting import PromptBuilder
 from prismatic.models.backbones.vision import ImageTransform
@@ -116,23 +117,15 @@ class FinetuneDataset(Dataset[Dict[str, torch.Tensor]]):
         self.prompt_builder_fn = prompt_builder_fn
         self.dataset_type = "finetune"
 
-        # Load Instruct JSON
+        # Load Instruct JSON — drop text-only examples so every batch is multimodal
         with open(self.instruct_json, "r") as f:
-            self.examples = json.load(f)
+            self.examples = [ex for ex in json.load(f) if "image" in ex]
 
     # === Unimodal + Multimodal Handling ===
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        """
-        Unlike the *align* stage handling, for the *finetune* stage, we actually need to handle multiple "turns" of
-        dialog grounded in a single image.
+        return self._get_example(idx)
 
-        To do this, we leverage the `prompt_builder_fn` which instantiates a PromptBuilder object. By calling the
-        methods for adding turns and getting a prompt, we ensure proper formatting and consistency for each example.
-
-        :param idx: Index to retrieve from the dataset.
-
-        :return: Dictionary of {"pixel_values": torch.Tensor, "input_ids": torch.Tensor, "labels": torch.Tensor}
-        """
+    def _get_example(self, idx: int) -> Dict[str, torch.Tensor]:
         conversation = self.examples[idx]["conversations"]
 
         # Create Prompt Builder --> add each message sequentially
@@ -148,6 +141,10 @@ class FinetuneDataset(Dataset[Dict[str, torch.Tensor]]):
             # Phi-2 Tokenizer == CodeGenTokenizer (Fast) -- no special handling!
             elif isinstance(self.tokenizer, CodeGenTokenizerFast):
                 pass
+
+            # T5 Tokenizer (SentencePiece) -- strip trailing whitespace like Llama
+            elif isinstance(self.tokenizer, T5TokenizerFast):
+                msg = msg.rstrip()
 
             else:
                 raise ValueError(f"Tokenizer of type `{type(self.tokenizer)}` is not explicitly handled!")

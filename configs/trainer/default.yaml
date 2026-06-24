@@ -1,0 +1,7 @@
+precision: bf16
+gradient_checkpointing: true
+compile_llm: false
+grad_clip: 1.0
+global_batch_size: 128
+per_device_batch_size: 16
+train_strategy: ddp

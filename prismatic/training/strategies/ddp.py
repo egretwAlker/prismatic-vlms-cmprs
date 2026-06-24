@@ -68,14 +68,22 @@ class DDPStrategy(TrainingStrategy):
             overwatch.info("Enabling Gradient Checkpointing on LLM Backbone", ctx_level=1)
             self.vlm.llm_backbone.gradient_checkpointing_enable()
 
-        # Move to Device =>> Note parameters are in full precision (*mixed precision* will only autocast as appropriate)
+        # Cast frozen vision backbone to half precision (same as FSDP strategy)
+        if self.enable_mixed_precision_training:
+            overwatch.info("Casting Vision Backbone to *Half Precision* via `.to(dtype=...)`", ctx_level=1)
+            self.vlm.vision_backbone.to(dtype=self.vlm.vision_backbone.half_precision_dtype)
+
+        # Move to Device
         overwatch.info("Placing Entire VLM (Vision Backbone, LLM Backbone, Projector Weights) on GPU", ctx_level=1)
         self.vlm.to(self.device_id)
 
-        # Wrap with Distributed Data Parallel
-        #   => Note: By default, wrapping naively with DDP(self.vlm) will initialize a *separate* buffer on GPU that
-        #            is the same size/dtype as the model parameters; this will *double* GPU memory!
-        # - stackoverflow.com/questions/68949954/model-takes-twice-the-memory-footprint-with-distributed-data-parallel
+        # Compile the LLM backbone for fused-kernel speedups (H100+)
+        if self.compile_llm:
+            overwatch.info("Compiling LLM Backbone with torch.compile", ctx_level=1)
+            self.vlm.llm_backbone.llm = torch.compile(self.vlm.llm_backbone.llm, dynamic=True)
+        else:
+            overwatch.info("Skipping torch.compile for LLM Backbone", ctx_level=1)
+
         overwatch.info("Wrapping VLM with Distributed Data Parallel", ctx_level=1)
         self.vlm = DDP(self.vlm, device_ids=[self.device_id], gradient_as_bucket_view=True)
 
@@ -91,7 +99,6 @@ class DDPStrategy(TrainingStrategy):
             # Set warmup steps (floor) based on `warmup_ratio` (should be 0.03 - 0.05)
             num_warmup_steps = int(num_training_steps * self.warmup_ratio)
 
-            assert self.weight_decay == 0, "DDP training does not currently support `weight_decay` > 0!"
             self.optimizer = AdamW(trainable_params, lr=self.learning_rate, weight_decay=self.weight_decay)
             self.lr_scheduler = get_cosine_schedule_with_warmup(self.optimizer, num_warmup_steps, num_training_steps)
             for param_group in self.optimizer.param_groups:
@@ -108,6 +115,7 @@ class DDPStrategy(TrainingStrategy):
             f"         |-> Distributed World Size = {overwatch.world_size()}\n"
             f"         |-> Gradient Accumulation Steps = {self.grad_accumulation_steps}\n\n"
             f"         |-> LLM Backbone Gradient Checkpointing = {self.enable_gradient_checkpointing}\n"
+            f"         |-> LLM Backbone torch.compile = {self.compile_llm}\n"
             f"         |-> Use Native AMP = {self.enable_mixed_precision_training} ({self.mixed_precision_dtype})\n\n"
             f"         |-> Default AdamW LR = {self.learning_rate}\n"
             f"         |-> AdamW Weight Decay = {self.weight_decay}\n"

@@ -136,6 +136,8 @@ class Metrics:
             "loss": deque(maxlen=window_size),
             "step_time": deque(maxlen=window_size),
             "lr": [],
+            "data_time": deque(maxlen=window_size),
+            "compute_time": deque(maxlen=window_size),
         }
 
     def log(self, global_step: int, metrics: Dict[str, Union[int, float]]) -> None:
@@ -148,7 +150,12 @@ class Metrics:
             return f"=>> [Global Step] {self.global_step:06d} =>> LR :: {lr:.6f}"
 
         # Otherwise, embed `loss` in status report!
-        return f"=>> [Global Step] {self.global_step:06d} =>> LR :: {lr:.6f} -- Loss :: {loss:.4f}"
+        parts = f"=>> [Global Step] {self.global_step:06d} =>> LR :: {lr:.6f} -- Loss :: {loss:.4f}"
+        if self.state.get("data_time") and self.state.get("compute_time"):
+            dt = list(self.state["data_time"])[-1]
+            ct = list(self.state["compute_time"])[-1]
+            parts += f" -- Data :: {dt:.2f}s -- Compute :: {ct:.2f}s"
+        return parts
 
     def commit(
         self, *, global_step: Optional[int] = None, lr: Optional[float] = None, update_step_time: bool = False, **kwargs
@@ -175,6 +182,8 @@ class Metrics:
                 loss_val = value.detach()
                 self.state["loss_raw"].append(loss_val)
                 self.state["loss"].append(loss_val)
+            elif isinstance(value, (int, float)):
+                self.state[key].append(value)
             else:
                 self.state[key].append(value.detach())
 
@@ -196,6 +205,14 @@ class Metrics:
                 f"{prefix}/Loss (Raw)": loss_raw,
                 f"{prefix}/Learning Rate": lr,
                 f"{prefix}/Step Time": step_time,
+                **(
+                    {
+                        f"{prefix}/Data Time": np.mean(list(self.state["data_time"])),
+                        f"{prefix}/Compute Time": np.mean(list(self.state["compute_time"])),
+                    }
+                    if self.state.get("data_time")
+                    else {}
+                ),
             },
         )
         return status

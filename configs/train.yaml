@@ -1,0 +1,28 @@
+defaults:
+  - optim: adamw
+  - schedule: cosine
+  - trainer: default
+  - data: llava_v15
+  - _self_
+
+seed: 7
+llm: ???                           # path to salaadpp resume.pth
+artifact: null                     # path to salaadpp artifact .pt (compressed); null = dense LLM
+lora_r: null                       # LoRA rank; null = no LoRA (full finetune)
+lora_alpha: null                   # LoRA scaling; defaults to lora_r if null
+lora_targets: qv                   # qv | attn | all | comma-separated module names
+vision: dinosiglip-vit-so-384px    # vision backbone id (from prismatic registry)
+resize_strategy: resize-naive
+arch_specifier: no-align+fused-gelu-mlp
+llm_max_length: 2048
+wandb_project: salaad-vlm
+wandb_entity: null
+
+data_root: ${oc.env:SALAAD_DATA_ROOT}
+weights_root: ${oc.env:SALAAD_WEIGHTS_ROOT}
+
+hydra:
+  run:
+    dir: ${data_root}/vlm_runs/${parent_name:${llm}}_${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

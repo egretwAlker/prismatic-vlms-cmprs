@@ -1,0 +1,4 @@
+name: cosine
+epochs: 2
+max_steps: null                  # if set, overrides epochs
+warmup_ratio: 0.03

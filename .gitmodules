@@ -1,0 +1,3 @@
+[submodule "vlm-evaluation"]
+	path = vlm-evaluation
+	url = https://github.com/TRI-ML/vlm-evaluation.git
